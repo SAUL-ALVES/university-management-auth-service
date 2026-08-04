@@ -1,8 +1,8 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import httpStatus from 'http-status';
 import mongoose, { SortOrder } from 'mongoose';
 import ApiError from '../../../errors/ApiError';
 import { paginationHelpers } from '../../../helpers/paginationHelper';
+import { queryHelpers } from '../../../helpers/queryHelper';
 import { IGenericResponse } from '../../../interfaces/common';
 import { IPaginationOptions } from '../../../interfaces/pagination';
 import { User } from '../user/user.model';
@@ -19,43 +19,20 @@ const getAllAdmins = async (
   filters: IAdminFilters,
   paginationOptions: IPaginationOptions
 ): Promise<IGenericResponse<IAdmin[]>> => {
-  // Extract searchTerm to implement search query
   const { searchTerm, ...filtersData } = filters;
   const { page, limit, skip, sortBy, sortOrder } =
     paginationHelpers.calculatePagination(paginationOptions);
 
-  const andConditions = [];
-
-  // Search needs $or for searching in specified fields
-  if (searchTerm) {
-    andConditions.push({
-      $or: adminSearchableFields.map(field => ({
-        [field]: {
-          $regex: searchTerm,
-          $options: 'i',
-        },
-      })),
-    });
-  }
-
-  // Filters needs $and to fullfill all the conditions
-  if (Object.keys(filtersData).length) {
-    andConditions.push({
-      $and: Object.entries(filtersData).map(([field, value]) => ({
-        [field]: value,
-      })),
-    });
-  }
-
-  // Dynamic sort needs  fields to  do sorting
-  const sortConditions: { [key: string]: SortOrder } = {};
-  if (sortBy && sortOrder) {
-    sortConditions[sortBy] = sortOrder;
-  }
-
-  // If there is no condition , put {} to give all data
-  const whereConditions =
-    andConditions.length > 0 ? { $and: andConditions } : {};
+  const andConditions = queryHelpers.buildAndConditions(
+    searchTerm,
+    filtersData as Record<string, unknown>,
+    adminSearchableFields
+  );
+  const sortConditions = queryHelpers.buildSortConditions(
+    sortBy,
+    sortOrder as SortOrder
+  );
+  const whereConditions = queryHelpers.buildWhereConditions(andConditions);
 
   const result = await Admin.find(whereConditions)
     .populate('managementDepartment')
@@ -86,48 +63,48 @@ const updateAdmin = async (
   }
 
   const { name, ...adminData } = payload;
-
-  const updatedStudentData: Partial<IAdmin> = { ...adminData };
+  const updatedAdminData: Partial<IAdmin> = { ...adminData };
 
   if (name && Object.keys(name).length > 0) {
-    Object.keys(name).forEach(key => {
-      const nameKey = `name.${key}` as keyof Partial<IAdmin>;
-      (updatedStudentData as any)[nameKey] = name[key as keyof typeof name];
-    });
+    queryHelpers.flattenNestedObject(
+      name as unknown as Record<string, unknown>,
+      'name',
+      updatedAdminData
+    );
   }
 
-  const result = await Admin.findOneAndUpdate({ id }, updatedStudentData, {
+  const result = await Admin.findOneAndUpdate({ id }, updatedAdminData, {
     new: true,
   });
   return result;
 };
 
 const deleteAdmin = async (id: string): Promise<IAdmin | null> => {
-  // check if the faculty is exist
   const isExist = await Admin.findOne({ id });
 
   if (!isExist) {
-    throw new ApiError(httpStatus.NOT_FOUND, 'Faculty not found !');
+    throw new ApiError(httpStatus.NOT_FOUND, 'Admin not found !');
   }
 
   const session = await mongoose.startSession();
 
   try {
     session.startTransaction();
-    //delete student first
-    const student = await Admin.findOneAndDelete({ id }, { session });
-    if (!student) {
-      throw new ApiError(404, 'Failed to delete student');
-    }
-    //delete user
-    await User.deleteOne({ id });
-    session.commitTransaction();
-    session.endSession();
 
-    return student;
+    const admin = await Admin.findOneAndDelete({ id }, { session });
+    if (!admin) {
+      throw new ApiError(httpStatus.NOT_FOUND, 'Failed to delete admin');
+    }
+
+    await User.deleteOne({ id }, { session });
+    await session.commitTransaction();
+
+    return admin;
   } catch (error) {
-    session.abortTransaction();
+    await session.abortTransaction();
     throw error;
+  } finally {
+    await session.endSession();
   }
 };
 
