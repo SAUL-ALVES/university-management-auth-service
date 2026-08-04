@@ -1,6 +1,6 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import mongoose, { SortOrder } from 'mongoose';
 import { paginationHelpers } from '../../../helpers/paginationHelper';
+import { queryHelpers } from '../../../helpers/queryHelper';
 import { IGenericResponse } from '../../../interfaces/common';
 import { IPaginationOptions } from '../../../interfaces/pagination';
 
@@ -8,7 +8,10 @@ import httpStatus from 'http-status';
 import ApiError from '../../../errors/ApiError';
 import { RedisClient } from '../../../shared/redis';
 import { User } from '../user/user.model';
-import { EVENT_STUDENT_UPDATED, studentSearchableFields } from './student.constant';
+import {
+  EVENT_STUDENT_UPDATED,
+  studentSearchableFields,
+} from './student.constant';
 import { IStudent, IStudentFilters } from './student.interface';
 import { Student } from './student.model';
 
@@ -16,39 +19,20 @@ const getAllStudents = async (
   filters: IStudentFilters,
   paginationOptions: IPaginationOptions
 ): Promise<IGenericResponse<IStudent[]>> => {
-  // Extract searchTerm to implement search query
   const { searchTerm, ...filtersData } = filters;
   const { page, limit, skip, sortBy, sortOrder } =
     paginationHelpers.calculatePagination(paginationOptions);
 
-  const andConditions = [];
-  // Search needs $or for searching in specified fields
-  if (searchTerm) {
-    andConditions.push({
-      $or: studentSearchableFields.map(field => ({
-        [field]: {
-          $regex: searchTerm,
-          $options: 'i',
-        },
-      })),
-    });
-  }
-  // Filters needs $and to fullfill all the conditions
-  if (Object.keys(filtersData).length) {
-    andConditions.push({
-      $and: Object.entries(filtersData).map(([field, value]) => ({
-        [field]: value,
-      })),
-    });
-  }
-
-  // Dynamic  Sort needs  field to  do sorting
-  const sortConditions: { [key: string]: SortOrder } = {};
-  if (sortBy && sortOrder) {
-    sortConditions[sortBy] = sortOrder;
-  }
-  const whereConditions =
-    andConditions.length > 0 ? { $and: andConditions } : {};
+  const andConditions = queryHelpers.buildAndConditions(
+    searchTerm,
+    filtersData as Record<string, unknown>,
+    studentSearchableFields
+  );
+  const sortConditions = queryHelpers.buildSortConditions(
+    sortBy,
+    sortOrder as SortOrder
+  );
+  const whereConditions = queryHelpers.buildWhereConditions(andConditions);
 
   const result = await Student.find(whereConditions)
     .populate('academicSemester')
@@ -89,29 +73,30 @@ const updateStudent = async (
   }
 
   const { name, guardian, localGuardian, ...studentData } = payload;
-
   const updatedStudentData: Partial<IStudent> = { ...studentData };
 
   if (name && Object.keys(name).length > 0) {
-    Object.keys(name).forEach(key => {
-      const nameKey = `name.${key}` as keyof Partial<IStudent>; // `name.fisrtName`
-      (updatedStudentData as any)[nameKey] = name[key as keyof typeof name];
-    });
+    queryHelpers.flattenNestedObject(
+      name as unknown as Record<string, unknown>,
+      'name',
+      updatedStudentData
+    );
   }
+
   if (guardian && Object.keys(guardian).length > 0) {
-    Object.keys(guardian).forEach(key => {
-      const guardianKey = `guardian.${key}` as keyof Partial<IStudent>; // `guardian.fisrtguardian`
-      (updatedStudentData as any)[guardianKey] =
-        guardian[key as keyof typeof guardian];
-    });
+    queryHelpers.flattenNestedObject(
+      guardian as unknown as Record<string, unknown>,
+      'guardian',
+      updatedStudentData
+    );
   }
+
   if (localGuardian && Object.keys(localGuardian).length > 0) {
-    Object.keys(localGuardian).forEach(key => {
-      const localGuradianKey =
-        `localGuardian.${key}` as keyof Partial<IStudent>; // `localGuardian.fisrtName`
-      (updatedStudentData as any)[localGuradianKey] =
-        localGuardian[key as keyof typeof localGuardian];
-    });
+    queryHelpers.flattenNestedObject(
+      localGuardian as unknown as Record<string, unknown>,
+      'localGuardian',
+      updatedStudentData
+    );
   }
 
   const result = await Student.findOneAndUpdate({ id }, updatedStudentData, {
@@ -120,16 +105,15 @@ const updateStudent = async (
     .populate('academicFaculty')
     .populate('academicDepartment')
     .populate('academicSemester');
-  ;
 
   if (result) {
     await RedisClient.publish(EVENT_STUDENT_UPDATED, JSON.stringify(result));
   }
+
   return result;
 };
 
 const deleteStudent = async (id: string): Promise<IStudent | null> => {
-  // check if the student is exist
   const isExist = await Student.findOne({ id });
 
   if (!isExist) {
@@ -140,20 +124,21 @@ const deleteStudent = async (id: string): Promise<IStudent | null> => {
 
   try {
     session.startTransaction();
-    //delete student first
+
     const student = await Student.findOneAndDelete({ id }, { session });
     if (!student) {
-      throw new ApiError(404, 'Failed to delete student');
+      throw new ApiError(httpStatus.NOT_FOUND, 'Failed to delete student');
     }
-    //delete user
-    await User.deleteOne({ id });
-    session.commitTransaction();
-    session.endSession();
+
+    await User.deleteOne({ id }, { session });
+    await session.commitTransaction();
 
     return student;
   } catch (error) {
-    session.abortTransaction();
+    await session.abortTransaction();
     throw error;
+  } finally {
+    await session.endSession();
   }
 };
 
