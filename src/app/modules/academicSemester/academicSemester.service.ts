@@ -21,28 +21,27 @@ const createSemester = async (
   if (academicSemesterTitleCodeMapper[payload.title] !== payload.code) {
     throw new ApiError(httpStatus.BAD_REQUEST, 'Invalid Semester Code');
   }
-  const result = await AcademicSemester.create(payload);
-  return result;
+
+  return AcademicSemester.create(payload);
 };
 
 const getSingleSemester = async (
   id: string
 ): Promise<IAcademicSemester | null> => {
-  const result = await AcademicSemester.findById(id);
-  return result;
+  return AcademicSemester.findById(id);
 };
 
 const getAllsemesters = async (
   filters: IAcademicSemesterFilters,
   paginationOptions: IPaginationOptions
 ): Promise<IGenericResponse<IAcademicSemester[]>> => {
-  // Extract searchTerm to implement search query
   const { searchTerm, ...filtersData } = filters;
+
   const { page, limit, skip, sortBy, sortOrder } =
     paginationHelpers.calculatePagination(paginationOptions);
 
-  const andConditions = [];
-  // Search needs $or for searching in specified fields
+  const andConditions: Record<string, unknown>[] = [];
+
   if (searchTerm) {
     andConditions.push({
       $or: academicSemesterSearchableFields.map(field => ({
@@ -54,7 +53,7 @@ const getAllsemesters = async (
     });
   }
 
-  if (Object.keys(filtersData).length) {
+  if (Object.keys(filtersData).length > 0) {
     andConditions.push({
       $and: Object.entries(filtersData).map(([field, value]) => ({
         [field]: value,
@@ -62,11 +61,12 @@ const getAllsemesters = async (
     });
   }
 
-  // Dynamic  Sort needs  field to  do sorting
-  const sortConditions: { [key: string]: SortOrder } = {};
+  const sortConditions: Record<string, SortOrder> = {};
+
   if (sortBy && sortOrder) {
     sortConditions[sortBy] = sortOrder;
   }
+
   const whereConditions =
     andConditions.length > 0 ? { $and: andConditions } : {};
 
@@ -99,51 +99,54 @@ const updateSemester = async (
     throw new ApiError(httpStatus.BAD_REQUEST, 'Invalid Semester Code');
   }
 
-  const result = await AcademicSemester.findOneAndUpdate({ _id: id }, payload, {
-    new: true,
-  });
-  return result;
+  return AcademicSemester.findOneAndUpdate(
+    { _id: id },
+    payload,
+    {
+      new: true,
+    }
+  );
 };
 
 const deleteSemester = async (
   id: string
 ): Promise<IAcademicSemester | null> => {
-  const result = await AcademicSemester.findByIdAndDelete(id);
-  return result;
+  return AcademicSemester.findByIdAndDelete(id);
 };
 
-
 const createSemesterFromEvent = async (
-  e: IAcademicSemesterCreatedEvent
+  event: IAcademicSemesterCreatedEvent
 ): Promise<void> => {
   await AcademicSemester.create({
-    title: e.title,
-    year: e.year,
-    code: e.code,
-    startMonth: e.startMonth,
-    endMonth: e.endMonth,
-    syncId: e.id
+    title: event.title,
+    year: event.year,
+    code: event.code,
+    startMonth: event.startMonth,
+    endMonth: event.endMonth,
+    syncId: event.id,
   });
 };
 
 const updateOneIntoDBFromEvent = async (
-  e: IAcademicSemesterCreatedEvent
+  event: IAcademicSemesterCreatedEvent
 ): Promise<void> => {
   await AcademicSemester.findOneAndUpdate(
-    { syncId: e.id },
+    { syncId: event.id },
     {
       $set: {
-        title: e.title,
-        year: e.year,
-        code: e.code,
-        startMonth: e.startMonth,
-        endMonth: e.endMonth
-      }
+        title: event.title,
+        year: event.year,
+        code: event.code,
+        startMonth: event.startMonth,
+        endMonth: event.endMonth,
+      },
     }
-  )
+  );
 };
 
-const deleteOneFromDBFromEvent = async (syncId: string): Promise<void> => {
+const deleteOneFromDBFromEvent = async (
+  syncId: string
+): Promise<void> => {
   await AcademicSemester.findOneAndDelete({ syncId });
 };
 
@@ -155,5 +158,5 @@ export const AcademicSemesterService = {
   deleteSemester,
   createSemesterFromEvent,
   updateOneIntoDBFromEvent,
-  deleteOneFromDBFromEvent
+  deleteOneFromDBFromEvent,
 };
