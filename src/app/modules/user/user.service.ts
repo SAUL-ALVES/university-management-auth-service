@@ -1,5 +1,5 @@
 import httpStatus from 'http-status';
-import mongoose from 'mongoose';
+import mongoose, { ClientSession, Types } from 'mongoose';
 import config from '../../../config/index';
 import ApiError from '../../../errors/ApiError';
 import { RedisClient } from '../../../shared/redis';
@@ -20,201 +20,204 @@ import {
   generateStudentId,
 } from './user.utils';
 
+type PopulateConfig = {
+  path: string;
+  populate?: Array<{ path: string }>;
+};
+
+type CreateRelatedUserParams<TProfile extends { id?: string }> = {
+  profile: TProfile;
+  user: IUser;
+  role: 'student' | 'faculty' | 'admin';
+  defaultPassword: string;
+  generateId: () => Promise<string>;
+  createProfile: (
+    docs: TProfile[],
+    options: { session: ClientSession }
+  ) => Promise<Array<TProfile & { _id: Types.ObjectId }>>;
+  attachProfileToUser: (user: IUser, profileId: Types.ObjectId) => void;
+  failCreateProfileMessage: string;
+  failCreateUserMessage: string;
+  populate: PopulateConfig;
+  eventName?: string;
+  eventPayload?: (createdUser: IUser) => unknown;
+};
+
+const withTransaction = async <T>(
+  work: (session: ClientSession) => Promise<T>
+): Promise<T> => {
+  const session = await mongoose.startSession();
+
+  try {
+    session.startTransaction();
+    const result = await work(session);
+    await session.commitTransaction();
+    return result;
+  } catch (error) {
+    await session.abortTransaction();
+    throw error;
+  } finally {
+    await session.endSession();
+  }
+};
+
+const applyDefaultPasswordAndRole = (
+  user: IUser,
+  defaultPassword: string,
+  role: IUser['role']
+): void => {
+  if (!user.password) {
+    user.password = defaultPassword;
+  }
+  user.role = role;
+};
+
+const createRelatedUser = async <TProfile extends { id?: string }>(
+  params: CreateRelatedUserParams<TProfile>
+): Promise<IUser | null> => {
+  const {
+    profile,
+    user,
+    role,
+    defaultPassword,
+    generateId,
+    createProfile,
+    attachProfileToUser,
+    failCreateProfileMessage,
+    failCreateUserMessage,
+    populate,
+    eventName,
+    eventPayload,
+  } = params;
+
+  applyDefaultPasswordAndRole(user, defaultPassword, role);
+
+  const createdUser = await withTransaction(async session => {
+    const id = await generateId();
+    user.id = id;
+    profile.id = id;
+
+    const createdProfiles = await createProfile([profile], { session });
+    if (!createdProfiles.length) {
+      throw new ApiError(httpStatus.BAD_REQUEST, failCreateProfileMessage);
+    }
+
+    attachProfileToUser(user, createdProfiles[0]._id);
+
+    const newUsers = await User.create([user], { session });
+    if (!newUsers.length) {
+      throw new ApiError(httpStatus.BAD_REQUEST, failCreateUserMessage);
+    }
+
+    return newUsers[0];
+  });
+
+  let populatedUser = await User.findOne({ id: createdUser.id }).populate(
+    populate
+  );
+
+  if (populatedUser && eventName && eventPayload) {
+    await RedisClient.publish(
+      eventName,
+      JSON.stringify(eventPayload(populatedUser))
+    );
+  }
+
+  return populatedUser;
+};
+
 const createStudent = async (
   student: IStudent,
   user: IUser
 ): Promise<IUser | null> => {
-  // If password is not given,set default password
-  if (!user.password) {
-    user.password = config.default_student_pass as string;
-  }
-  // set role
-  user.role = 'student';
-
-  const academicsemester = await AcademicSemester.findById(
+  const academicSemester = await AcademicSemester.findById(
     student.academicSemester
   ).lean();
 
-  let newUserAllData = null;
-  const session = await mongoose.startSession();
-  try {
-    session.startTransaction();
-    // generate student id
-    const id = await generateStudentId(academicsemester as IAcademicSemester);
-    // set custom id into both  student & user
-    user.id = id;
-    student.id = id;
-
-    // Create student using sesssin
-    const newStudent = await Student.create([student], { session });
-
-    if (!newStudent.length) {
-      throw new ApiError(httpStatus.BAD_REQUEST, 'Failed to create student');
-    }
-
-    // set student _id (reference) into user.student
-    user.student = newStudent[0]._id;
-
-    const newUser = await User.create([user], { session });
-
-    if (!newUser.length) {
-      throw new ApiError(httpStatus.BAD_REQUEST, 'Failed to create user');
-    }
-    newUserAllData = newUser[0];
-
-    await session.commitTransaction();
-    await session.endSession();
-  } catch (error) {
-    await session.abortTransaction();
-    await session.endSession();
-    throw error;
-  }
-
-  if (newUserAllData) {
-    newUserAllData = await User.findOne({ id: newUserAllData.id }).populate({
+  return createRelatedUser({
+    profile: student,
+    user,
+    role: 'student',
+    defaultPassword: config.default_student_pass as string,
+    generateId: () =>
+      generateStudentId(academicSemester as IAcademicSemester),
+    createProfile: (docs, options) =>
+      Student.create(docs, options) as Promise<
+        Array<IStudent & { _id: Types.ObjectId }>
+      >,
+    attachProfileToUser: (currentUser, profileId) => {
+      currentUser.student = profileId;
+    },
+    failCreateProfileMessage: 'Failed to create student',
+    failCreateUserMessage: 'Failed to create user',
+    populate: {
       path: 'student',
       populate: [
-        {
-          path: 'academicSemester',
-        },
-        {
-          path: 'academicDepartment',
-        },
-        {
-          path: 'academicFaculty',
-        },
+        { path: 'academicSemester' },
+        { path: 'academicDepartment' },
+        { path: 'academicFaculty' },
       ],
-    });
-  }
-
-  if (newUserAllData) {
-    await RedisClient.publish(EVENT_STUDENT_CREATED, JSON.stringify(newUserAllData.student))
-  }
-
-  return newUserAllData;
+    },
+    eventName: EVENT_STUDENT_CREATED,
+    eventPayload: createdUser => createdUser.student,
+  });
 };
 
 const createFaculty = async (
   faculty: IFaculty,
   user: IUser
 ): Promise<IUser | null> => {
-  // If password is not given,set default password
-  if (!user.password) {
-    user.password = config.default_faculty_pass as string;
-  }
-
-  // set role
-  user.role = 'faculty';
-
-  let newUserAllData = null;
-  const session = await mongoose.startSession();
-  try {
-    session.startTransaction();
-    // generate faculty id
-    const id = await generateFacultyId();
-    // set custom id into both  faculty & user
-    user.id = id;
-    faculty.id = id;
-    // Create faculty using sesssin
-    const newFaculty = await Faculty.create([faculty], { session });
-
-    if (!newFaculty.length) {
-      throw new ApiError(httpStatus.BAD_REQUEST, 'Failed to create faculty ');
-    }
-    // set faculty _id (reference) into user.student
-    user.faculty = newFaculty[0]._id;
-
-    const newUser = await User.create([user], { session });
-
-    if (!newUser.length) {
-      throw new ApiError(httpStatus.BAD_REQUEST, 'Failed to create faculty');
-    }
-    newUserAllData = newUser[0];
-
-    await session.commitTransaction();
-    await session.endSession();
-  } catch (error) {
-    await session.abortTransaction();
-    await session.endSession();
-    throw error;
-  }
-
-  if (newUserAllData) {
-    newUserAllData = await User.findOne({ id: newUserAllData.id }).populate({
+  return createRelatedUser({
+    profile: faculty,
+    user,
+    role: 'faculty',
+    defaultPassword: config.default_faculty_pass as string,
+    generateId: generateFacultyId,
+    createProfile: (docs, options) =>
+      Faculty.create(docs, options) as Promise<
+        Array<IFaculty & { _id: Types.ObjectId }>
+      >,
+    attachProfileToUser: (currentUser, profileId) => {
+      currentUser.faculty = profileId;
+    },
+    failCreateProfileMessage: 'Failed to create faculty',
+    failCreateUserMessage: 'Failed to create user',
+    populate: {
       path: 'faculty',
       populate: [
-        {
-          path: 'academicDepartment',
-        },
-        {
-          path: 'academicFaculty',
-        },
+        { path: 'academicDepartment' },
+        { path: 'academicFaculty' },
       ],
-    });
-  };
-
-  if (newUserAllData) {
-    await RedisClient.publish(EVENT_FACULTY_CREATED, JSON.stringify(newUserAllData.faculty));
-  }
-
-  return newUserAllData;
+    },
+    eventName: EVENT_FACULTY_CREATED,
+    eventPayload: createdUser => createdUser.faculty,
+  });
 };
 
 const createAdmin = async (
   admin: IAdmin,
   user: IUser
 ): Promise<IUser | null> => {
-  // If password is not given,set default password
-  if (!user.password) {
-    user.password = config.default_admin_pass as string;
-  }
-  // set role
-  user.role = 'admin';
-
-  let newUserAllData = null;
-  const session = await mongoose.startSession();
-  try {
-    session.startTransaction();
-    // generate admin id
-    const id = await generateAdminId();
-    user.id = id;
-    admin.id = id;
-
-    const newAdmin = await Admin.create([admin], { session });
-
-    if (!newAdmin.length) {
-      throw new ApiError(httpStatus.BAD_REQUEST, 'Failed to create faculty ');
-    }
-
-    user.admin = newAdmin[0]._id;
-
-    const newUser = await User.create([user], { session });
-
-    if (!newUser.length) {
-      throw new ApiError(httpStatus.BAD_REQUEST, 'Failed to create admin');
-    }
-    newUserAllData = newUser[0];
-
-    await session.commitTransaction();
-    await session.endSession();
-  } catch (error) {
-    await session.abortTransaction();
-    await session.endSession();
-    throw error;
-  }
-
-  if (newUserAllData) {
-    newUserAllData = await User.findOne({ id: newUserAllData.id }).populate({
+  return createRelatedUser({
+    profile: admin,
+    user,
+    role: 'admin',
+    defaultPassword: config.default_admin_pass as string,
+    generateId: generateAdminId,
+    createProfile: (docs, options) =>
+      Admin.create(docs, options) as Promise<
+        Array<IAdmin & { _id: Types.ObjectId }>
+      >,
+    attachProfileToUser: (currentUser, profileId) => {
+      currentUser.admin = profileId;
+    },
+    failCreateProfileMessage: 'Failed to create admin',
+    failCreateUserMessage: 'Failed to create admin',
+    populate: {
       path: 'admin',
-      populate: [
-        {
-          path: 'managementDepartment',
-        },
-      ],
-    });
-  }
-
-  return newUserAllData;
+      populate: [{ path: 'managementDepartment' }],
+    },
+  });
 };
 
 export const UserService = {
