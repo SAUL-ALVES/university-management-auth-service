@@ -1,6 +1,6 @@
 /* eslint-disable no-console */
-import { Server } from 'http';
 import mongoose from 'mongoose';
+import { Server } from 'node:http';
 import app from './app';
 import subscribeToEvents from './app/events';
 import config from './config/index';
@@ -16,17 +16,14 @@ let server: Server;
 
 async function bootstrap() {
   try {
-    await RedisClient.connect().then(() => {
-      subscribeToEvents()
-    });
-
+    await RedisClient.connect();
+    subscribeToEvents();
 
     await mongoose.connect(config.database_url as string);
-    // logger.info(`🛢   Database is connected successfully`);
+
     console.log(`🛢   Database is connected successfully`);
 
     server = app.listen(config.port, () => {
-      // logger.info(`Application  listening on port ${config.port}`);
       console.log(`Application  listening on port ${config.port}`);
     });
   } catch (err) {
@@ -34,22 +31,16 @@ async function bootstrap() {
   }
 
   process.on('unhandledRejection', error => {
-    if (server) {
-      server.close(() => {
-        errorlogger.error(error);
-        process.exit(1);
-      });
-    } else {
+    if (!server) {
       process.exit(1);
+      return;
     }
+
+    server.close(() => {
+      errorlogger.error(error);
+      process.exit(1);
+    });
   });
 }
 
 bootstrap();
-
-// process.on('SIGTERM', () => {
-//   logger.info('SIGTERM is received');
-//   if (server) {
-//     server.close();
-//   }
-// });
