@@ -1,5 +1,6 @@
 import { SortOrder } from 'mongoose';
 import { paginationHelpers } from '../../../helpers/paginationHelper';
+import { queryHelpers } from '../../../helpers/queryHelper';
 import { IGenericResponse } from '../../../interfaces/common';
 import { IPaginationOptions } from '../../../interfaces/pagination';
 import { managementDepartmentSearchableFields } from './managementDepartment.constant';
@@ -12,61 +13,40 @@ import { ManagementDepartment } from './managementDepartment.model';
 const createDepartment = async (
   payload: IManagementDepartment
 ): Promise<IManagementDepartment | null> => {
-  const result = await ManagementDepartment.create(payload);
-  return result;
+  return ManagementDepartment.create(payload);
 };
 
 const getSingleDepartment = async (
   id: string
 ): Promise<IManagementDepartment | null> => {
-  const result = await ManagementDepartment.findById(id);
-  return result;
+  return ManagementDepartment.findById(id);
 };
 
 const getAllDepartments = async (
   filters: IManagementDepartmentFilters,
   paginationOptions: IPaginationOptions
 ): Promise<IGenericResponse<IManagementDepartment[]>> => {
-  // Extract searchTerm to implement search query
   const { searchTerm, ...filtersData } = filters;
   const { page, limit, skip, sortBy, sortOrder } =
     paginationHelpers.calculatePagination(paginationOptions);
 
-  const andConditions = [];
-  // Search needs $or for searching in specified fields
-  if (searchTerm) {
-    andConditions.push({
-      $or: managementDepartmentSearchableFields.map(field => ({
-        [field]: {
-          $regex: searchTerm,
-          $options: 'i',
-        },
-      })),
-    });
-  }
-  // Filters needs $and to fullfill all the conditions
-  if (Object.keys(filtersData).length) {
-    andConditions.push({
-      $and: Object.entries(filtersData).map(([field, value]) => ({
-        [field]: value,
-      })),
-    });
-  }
-
-  // Dynamic  Sort needs  field to  do sorting
-  const sortConditions: { [key: string]: SortOrder } = {};
-  if (sortBy && sortOrder) {
-    sortConditions[sortBy] = sortOrder;
-  }
-  const whereConditions =
-    andConditions.length > 0 ? { $and: andConditions } : {};
+  const andConditions = queryHelpers.buildAndConditions(
+    searchTerm,
+    filtersData as Record<string, unknown>,
+    managementDepartmentSearchableFields
+  );
+  const sortConditions = queryHelpers.buildSortConditions(
+    sortBy,
+    sortOrder as SortOrder
+  );
+  const whereConditions = queryHelpers.buildWhereConditions(andConditions);
 
   const result = await ManagementDepartment.find(whereConditions)
     .sort(sortConditions)
     .skip(skip)
     .limit(limit);
 
-  const total = await ManagementDepartment.countDocuments();
+  const total = await ManagementDepartment.countDocuments(whereConditions);
 
   return {
     meta: {
@@ -82,22 +62,15 @@ const updateDepartment = async (
   id: string,
   payload: Partial<IManagementDepartment>
 ): Promise<IManagementDepartment | null> => {
-  const result = await ManagementDepartment.findOneAndUpdate(
-    { _id: id },
-    payload,
-    {
-      new: true,
-    }
-  );
-  return result;
+  return ManagementDepartment.findOneAndUpdate({ _id: id }, payload, {
+    new: true,
+  });
 };
 
 const deleteDepartment = async (
   id: string
 ): Promise<IManagementDepartment | null> => {
-  console.log(id)
-  const result = await ManagementDepartment.findByIdAndDelete(id);
-  return result;
+  return ManagementDepartment.findByIdAndDelete(id);
 };
 
 export const ManagementDepartmentService = {
