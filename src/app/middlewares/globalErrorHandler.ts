@@ -1,74 +1,100 @@
-/* eslint-disable no-unused-vars */
-/* eslint-disable no-unused-expressions */
-/* eslint-disable @typescript-eslint/no-unused-vars */
-import { ErrorRequestHandler, NextFunction, Request, Response } from 'express';
+import { ErrorRequestHandler } from 'express';
+import { ZodError } from 'zod';
 import config from '../../config';
 import ApiError from '../../errors/ApiError';
-import handleValidationError from '../../errors/handleValidationError';
-
-import { ZodError } from 'zod';
 import handleCastError from '../../errors/handleCastError';
+import handleValidationError from '../../errors/handleValidationError';
 import handleZodError from '../../errors/handleZodError';
+import { IGenericErrorResponse } from '../../interfaces/common';
 import { IGenericErrorMessage } from '../../interfaces/error';
 import { errorlogger } from '../../shared/logger';
 
+const DEFAULT_ERROR: IGenericErrorResponse = {
+  statusCode: 500,
+  message: 'Something went wrong !',
+  errorMessages: [],
+};
+
+const buildErrorMessages = (
+  message: string
+): IGenericErrorMessage[] => [
+  {
+    path: '',
+    message,
+  },
+];
+
+const buildBasicError = (
+  message: string,
+  statusCode = 500
+): IGenericErrorResponse => ({
+  statusCode,
+  message,
+  errorMessages: buildErrorMessages(message),
+});
+
+const simplifyError = (error: unknown): IGenericErrorResponse => {
+  if (error instanceof ZodError) {
+    return handleZodError(error);
+  }
+
+  if (error instanceof ApiError) {
+    return buildBasicError(error.message, error.statusCode);
+  }
+
+  if (!(error instanceof Error)) {
+    return DEFAULT_ERROR;
+  }
+
+  if (error.name === 'ValidationError') {
+    return handleValidationError(
+      error as Parameters<typeof handleValidationError>[0]
+    );
+  }
+
+  if (error.name === 'CastError') {
+    return handleCastError(
+      error as Parameters<typeof handleCastError>[0]
+    );
+  }
+
+  return buildBasicError(error.message);
+};
+
+const logError = (error: unknown): void => {
+  if (config.env === 'development') {
+    console.log(`🐱‍🏍 globalErrorHandler ~~`, { error });
+    return;
+  }
+
+  errorlogger.error(`🐱‍🏍 globalErrorHandler ~~`, error);
+};
+
 const globalErrorHandler: ErrorRequestHandler = (
   error,
-  req: Request,
-  res: Response,
-  next: NextFunction
+  req,
+  res,
+  next
 ) => {
-  config.env === 'development'
-    ? console.log(`🐱‍🏍 globalErrorHandler ~~`, { error })
-    : errorlogger.error(`🐱‍🏍 globalErrorHandler ~~`, error);
+  void req;
+  void next;
 
-  let statusCode = 500;
-  let message = 'Something went wrong !';
-  let errorMessages: IGenericErrorMessage[] = [];
+  logError(error);
 
-  if (error?.name === 'ValidationError') {
-    const simplifiedError = handleValidationError(error);
-    statusCode = simplifiedError.statusCode;
-    message = simplifiedError.message;
-    errorMessages = simplifiedError.errorMessages;
-  } else if (error instanceof ZodError) {
-    const simplifiedError = handleZodError(error);
-    statusCode = simplifiedError.statusCode;
-    message = simplifiedError.message;
-    errorMessages = simplifiedError.errorMessages;
-  } else if (error?.name === 'CastError') {
-    const simplifiedError = handleCastError(error);
-    statusCode = simplifiedError.statusCode;
-    message = simplifiedError.message;
-    errorMessages = simplifiedError.errorMessages;
-  } else if (error instanceof ApiError) {
-    statusCode = error?.statusCode;
-    message = error.message;
-    errorMessages = error?.message
-      ? [
-          {
-            path: '',
-            message: error?.message,
-          },
-        ]
-      : [];
-  } else if (error instanceof Error) {
-    message = error?.message;
-    errorMessages = error?.message
-      ? [
-          {
-            path: '',
-            message: error?.message,
-          },
-        ]
-      : [];
-  }
+  const {
+    statusCode,
+    message,
+    errorMessages,
+  } = simplifyError(error);
 
   res.status(statusCode).json({
     success: false,
     message,
     errorMessages,
-    stack: config.env !== 'production' ? error?.stack : undefined,
+    stack:
+      config.env !== 'production'
+        ? (error as Error)?.stack
+        : undefined,
   });
 };
 
