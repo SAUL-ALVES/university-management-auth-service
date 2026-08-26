@@ -1,70 +1,30 @@
-import { Request, Response } from 'express';
-import httpStatus from 'http-status';
-import { paginationFields } from '../../../constants/pagination';
-import catchAsync from '../../../shared/catchAsync';
-import pick from '../../../shared/pick';
-import sendResponse from '../../../shared/sendResponse';
+import { createCrudControllerWithoutCreate } from '../../../shared/crudControllerFactory';
 import { adminFilterableFields } from './admin.constant';
-import { IAdmin } from './admin.interface';
+import { IAdmin, IAdminFilters } from './admin.interface';
 import { AdminService } from './admin.service';
 
-const getSingleAdmin = catchAsync(async (req: Request, res: Response) => {
-  const id = req.params.id;
-  const result = await AdminService.getSingleAdmin(id);
-
-  sendResponse<IAdmin>(res, {
-    statusCode: httpStatus.OK,
-    success: true,
-    message: 'Admin fetched successfully !',
-    data: result,
-  });
-});
-
-const getAllAdmins = catchAsync(async (req: Request, res: Response) => {
-  const filters = pick(req.query, adminFilterableFields);
-  const paginationOptions = pick(req.query, paginationFields);
-
-  const result = await AdminService.getAllAdmins(filters, paginationOptions);
-
-  sendResponse<IAdmin[]>(res, {
-    statusCode: httpStatus.OK,
-    success: true,
-    message: 'Admins fetched successfully !',
-    meta: result.meta,
-    data: result.data,
-  });
-});
-
-const updateAdmin = catchAsync(async (req: Request, res: Response) => {
-  const id = req.params.id;
-  const updatedData = req.body;
-
-  const result = await AdminService.updateAdmin(id, updatedData);
-
-  sendResponse<IAdmin>(res, {
-    statusCode: httpStatus.OK,
-    success: true,
-    message: 'Admin updated successfully !',
-    data: result,
-  });
-});
-
-const deleteAdmin = catchAsync(async (req: Request, res: Response) => {
-  const id = req.params.id;
-
-  const result = await AdminService.deleteAdmin(id);
-
-  sendResponse<IAdmin>(res, {
-    statusCode: httpStatus.OK,
-    success: true,
-    message: 'Admin deleted successfully !',
-    data: result,
-  });
+const handlers = createCrudControllerWithoutCreate<
+  IAdmin,
+  IAdminFilters
+>({
+  filterableFields: adminFilterableFields,
+  service: {
+    getAll: AdminService.getAllAdmins,
+    getOne: AdminService.getSingleAdmin,
+    update: AdminService.updateAdmin,
+    remove: AdminService.deleteAdmin,
+  },
+  messages: {
+    fetchedAll: 'Admins fetched successfully !',
+    fetchedOne: 'Admin fetched successfully !',
+    updated: 'Admin updated successfully !',
+    deleted: 'Admin deleted successfully !',
+  },
 });
 
 export const AdminController = {
-  getSingleAdmin,
-  getAllAdmins,
-  updateAdmin,
-  deleteAdmin,
+  getSingleAdmin: handlers.getOne,
+  getAllAdmins: handlers.getAll,
+  updateAdmin: handlers.update,
+  deleteAdmin: handlers.remove,
 };
